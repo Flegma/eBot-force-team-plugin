@@ -16,7 +16,9 @@ public class EbotForceTeam : BasePlugin
             CommandForceTeam);
     }
 
-    private void CommandForceTeam(CCSPlayerController? caller, CommandInfo info)
+    #nullable disable
+    private void CommandForceTeam(CCSPlayerController caller, CommandInfo info)
+    #nullable restore
     {
         if (info.ArgCount < 3) return;
 
