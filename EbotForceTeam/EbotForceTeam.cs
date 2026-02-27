@@ -195,10 +195,22 @@ public class EbotForceTeam : BasePlugin
         // Block the manual team choice and force correct team
         Server.NextFrame(() =>
         {
-            if (player.IsValid && player.Team != targetTeam)
+            if (!player.IsValid) return;
+
+            if (player.Team != targetTeam)
             {
                 player.SwitchTeam(targetTeam);
             }
+
+            Server.NextFrame(() =>
+            {
+                if (player.IsValid && !player.PawnIsAlive)
+                {
+                    player.Respawn();
+                    Logger.LogInformation("[EbotForceTeam] jointeam: Respawned {Name} after team assignment",
+                        player.PlayerName);
+                }
+            });
         });
 
         return HookResult.Handled;
@@ -217,7 +229,7 @@ public class EbotForceTeam : BasePlugin
 
             player.SwitchTeam(targetTeam);
 
-            // Verify on next frame
+            // Verify and respawn on next frame
             Server.NextFrame(() =>
             {
                 if (!player.IsValid) return;
@@ -226,6 +238,13 @@ public class EbotForceTeam : BasePlugin
                 {
                     Logger.LogInformation("[EbotForceTeam] Verified: {Name} is now on {Team}",
                         player.PlayerName, targetTeam);
+
+                    if (!player.PawnIsAlive)
+                    {
+                        player.Respawn();
+                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} after team assignment",
+                            player.PlayerName);
+                    }
                 }
                 else
                 {
