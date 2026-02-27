@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore EbotForceTeam/EbotForceTeam.csproj
+
+      - name: Build
+        run: dotnet build EbotForceTeam/EbotForceTeam.csproj -c Release --no-restore
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p artifact/EbotForceTeam
+          cp EbotForceTeam/bin/Release/net8.0/EbotForceTeam.dll artifact/EbotForceTeam/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EbotForceTeam
+          path: artifact/EbotForceTeam/
