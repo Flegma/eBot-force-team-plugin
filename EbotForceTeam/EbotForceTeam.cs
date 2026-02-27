@@ -12,7 +12,7 @@ namespace EbotForceTeam;
 public class EbotForceTeam : BasePlugin
 {
     public override string ModuleName => "eBot Force Team";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.2.0";
 
     private readonly Dictionary<ulong, CsTeam> _roster = new();
 
@@ -24,6 +24,8 @@ public class EbotForceTeam : BasePlugin
             CommandSetRoster);
         AddCommand("css_ebot_clear_rosters", "Clear all roster assignments",
             CommandClearRosters);
+        AddCommand("css_ebot_apply_rosters", "Enforce roster assignments on all connected players",
+            CommandApplyRosters);
 
         RegisterEventHandler<EventPlayerConnectFull>(OnPlayerConnectFull);
         AddCommandListener("jointeam", OnJoinTeamCommand);
@@ -74,6 +76,47 @@ public class EbotForceTeam : BasePlugin
         var count = _roster.Count;
         _roster.Clear();
         Logger.LogInformation("[EbotForceTeam] Rosters cleared ({Count} entries removed)", count);
+    }
+
+    private void CommandApplyRosters(CCSPlayerController? caller, CommandInfo info)
+    {
+        if (_roster.Count == 0)
+        {
+            Logger.LogInformation("[EbotForceTeam] apply_rosters: no roster entries, nothing to do");
+            return;
+        }
+
+        Logger.LogInformation("[EbotForceTeam] apply_rosters: enforcing {Count} roster entries on connected players",
+            _roster.Count);
+
+        var moved = 0;
+        var correct = 0;
+
+        foreach (var player in Utilities.GetPlayers())
+        {
+            if (!player.IsValid || player.IsBot || player.IsHLTV)
+                continue;
+
+            if (player.Team == CsTeam.None || player.Team == CsTeam.Spectator)
+                continue;
+
+            if (!_roster.TryGetValue(player.SteamID, out var targetTeam))
+                continue;
+
+            if (player.Team == targetTeam)
+            {
+                correct++;
+                continue;
+            }
+
+            Logger.LogInformation("[EbotForceTeam] apply_rosters: {Name} ({SteamId64}) is on {Current}, should be {Target}",
+                player.PlayerName, player.SteamID, player.Team, targetTeam);
+            ForcePlayerToTeam(player, targetTeam);
+            moved++;
+        }
+
+        Logger.LogInformation("[EbotForceTeam] apply_rosters: {Moved} moved, {Correct} already correct",
+            moved, correct);
     }
 
     private void CommandForceTeam(CCSPlayerController? caller, CommandInfo info)
