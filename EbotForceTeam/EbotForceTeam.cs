@@ -13,9 +13,10 @@ namespace EbotForceTeam;
 public class EbotForceTeam : BasePlugin
 {
     public override string ModuleName => "eBot Force Team";
-    public override string ModuleVersion => "1.3.2";
+    public override string ModuleVersion => "1.4.0";
 
     private readonly Dictionary<ulong, CsTeam> _roster = new();
+    private readonly HashSet<ulong> _knownPlayers = new();
 
     public override void Load(bool hotReload)
     {
@@ -69,7 +70,7 @@ public class EbotForceTeam : BasePlugin
         if (player != null && player.IsValid && player.Team != targetTeam.Value
             && player.Team != CsTeam.None && player.Team != CsTeam.Spectator)
         {
-            ForcePlayerToTeam(player, targetTeam.Value);
+            ForcePlayerToTeam(player, targetTeam.Value, false);
         }
     }
 
@@ -77,7 +78,8 @@ public class EbotForceTeam : BasePlugin
     {
         var count = _roster.Count;
         _roster.Clear();
-        Logger.LogInformation("[EbotForceTeam] Rosters cleared ({Count} entries removed)", count);
+        _knownPlayers.Clear();
+        Logger.LogInformation("[EbotForceTeam] Rosters cleared ({Count} entries removed, known players reset)", count);
     }
 
     private void CommandApplyRosters(CCSPlayerController? caller, CommandInfo info)
@@ -139,7 +141,7 @@ public class EbotForceTeam : BasePlugin
             return;
         }
 
-        ForcePlayerToTeam(player, targetTeam.Value);
+        ForcePlayerToTeam(player, targetTeam.Value, false);
     }
 
     // --- Event Handlers ---
@@ -159,8 +161,11 @@ public class EbotForceTeam : BasePlugin
             return HookResult.Continue;
         }
 
-        Logger.LogInformation("[EbotForceTeam] Connect: {Name} ({SteamId64}) is rostered for {Team}, forcing after delay",
-            player.PlayerName, steamId64, targetTeam);
+        var isReconnect = _knownPlayers.Contains(steamId64);
+        _knownPlayers.Add(steamId64);
+
+        Logger.LogInformation("[EbotForceTeam] Connect: {Name} ({SteamId64}) rostered for {Team} (reconnect={Reconnect})",
+            player.PlayerName, steamId64, targetTeam, isReconnect);
 
         // Small delay to let the client fully initialize before forcing team
         AddTimer(0.5f, () =>
@@ -171,10 +176,18 @@ public class EbotForceTeam : BasePlugin
             {
                 Logger.LogInformation("[EbotForceTeam] Connect: {Name} already on correct team {Team}",
                     player.PlayerName, targetTeam);
+
+                // Reconnect during freeze time: respawn even if already on correct team
+                if (isReconnect && !player.PawnIsAlive && CanRespawnForReconnect())
+                {
+                    player.Respawn();
+                    Logger.LogInformation("[EbotForceTeam] Respawned reconnecting {Name} (freeze/warmup/paused)",
+                        player.PlayerName);
+                }
                 return;
             }
 
-            ForcePlayerToTeam(player, targetTeam);
+            ForcePlayerToTeam(player, targetTeam, isReconnect);
         });
 
         return HookResult.Continue;
@@ -233,10 +246,10 @@ public class EbotForceTeam : BasePlugin
 
             Server.NextFrame(() =>
             {
-                if (player.IsValid && !player.PawnIsAlive && CanRespawn())
+                if (player.IsValid && !player.PawnIsAlive && CanRespawnGeneral())
                 {
                     player.Respawn();
-                    Logger.LogInformation("[EbotForceTeam] jointeam: Respawned {Name} after team assignment",
+                    Logger.LogInformation("[EbotForceTeam] jointeam: Respawned {Name} (warmup/paused)",
                         player.PlayerName);
                 }
             });
@@ -271,7 +284,7 @@ public class EbotForceTeam : BasePlugin
 
             Logger.LogInformation("[EbotForceTeam] {Source}: {Name} ({SteamId64}) is on {Current}, forcing to {Target}",
                 source, player.PlayerName, player.SteamID, player.Team, targetTeam);
-            ForcePlayerToTeam(player, targetTeam);
+            ForcePlayerToTeam(player, targetTeam, false);
             moved++;
         }
 
@@ -282,10 +295,10 @@ public class EbotForceTeam : BasePlugin
         }
     }
 
-    private void ForcePlayerToTeam(CCSPlayerController player, CsTeam targetTeam)
+    private void ForcePlayerToTeam(CCSPlayerController player, CsTeam targetTeam, bool isReconnect)
     {
-        Logger.LogInformation("[EbotForceTeam] Forcing {Name} ({SteamId64}) from {Current} to {Target}",
-            player.PlayerName, player.SteamID, player.Team, targetTeam);
+        Logger.LogInformation("[EbotForceTeam] Forcing {Name} ({SteamId64}) from {Current} to {Target} (reconnect={Reconnect})",
+            player.PlayerName, player.SteamID, player.Team, targetTeam, isReconnect);
 
         Server.NextFrame(() =>
         {
@@ -293,7 +306,7 @@ public class EbotForceTeam : BasePlugin
 
             player.SwitchTeam(targetTeam);
 
-            // Verify on next frame and respawn only if safe
+            // Verify on next frame
             Server.NextFrame(() =>
             {
                 if (!player.IsValid) return;
@@ -303,11 +316,18 @@ public class EbotForceTeam : BasePlugin
                     Logger.LogInformation("[EbotForceTeam] Verified: {Name} is now on {Team}",
                         player.PlayerName, targetTeam);
 
-                    if (!player.PawnIsAlive && CanRespawn())
+                    if (!player.PawnIsAlive)
                     {
-                        player.Respawn();
-                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} (safe state: warmup/paused)",
-                            player.PlayerName);
+                        // Reconnect: respawn in warmup, paused, OR freeze time
+                        // First connect / enforcement: respawn only in warmup or paused
+                        var shouldRespawn = isReconnect ? CanRespawnForReconnect() : CanRespawnGeneral();
+
+                        if (shouldRespawn)
+                        {
+                            player.Respawn();
+                            Logger.LogInformation("[EbotForceTeam] Respawned {Name} (reconnect={Reconnect})",
+                                player.PlayerName, isReconnect);
+                        }
                     }
                 }
                 else
@@ -319,15 +339,30 @@ public class EbotForceTeam : BasePlugin
         });
     }
 
-    private bool CanRespawn()
+    /// <summary>
+    /// Reconnecting player: respawn in warmup, freeze time, or paused.
+    /// </summary>
+    private bool CanRespawnForReconnect()
     {
-        var gameRules = Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules")
-            .FirstOrDefault()?.GameRules;
+        var gameRules = GetGameRules();
+        if (gameRules == null) return false;
+        return gameRules.WarmupPeriod || gameRules.FreezePeriod || gameRules.GamePaused;
+    }
 
-        if (gameRules == null)
-            return false;
-
+    /// <summary>
+    /// General case (first connect, enforcement, jointeam): respawn only in warmup or paused.
+    /// </summary>
+    private bool CanRespawnGeneral()
+    {
+        var gameRules = GetGameRules();
+        if (gameRules == null) return false;
         return gameRules.WarmupPeriod || gameRules.GamePaused;
+    }
+
+    private CCSGameRules? GetGameRules()
+    {
+        return Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules")
+            .FirstOrDefault()?.GameRules;
     }
 
     private static CsTeam? ParseTeam(string teamStr)
