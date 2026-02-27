@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
@@ -12,7 +13,7 @@ namespace EbotForceTeam;
 public class EbotForceTeam : BasePlugin
 {
     public override string ModuleName => "eBot Force Team";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.3.1";
 
     private readonly Dictionary<ulong, CsTeam> _roster = new();
 
@@ -28,7 +29,7 @@ public class EbotForceTeam : BasePlugin
             CommandApplyRosters);
 
         RegisterEventHandler<EventPlayerConnectFull>(OnPlayerConnectFull);
-        RegisterEventHandler<EventRoundPrestart>(OnRoundPrestart);
+        RegisterEventHandler<EventRoundStart>(OnRoundStart);
         AddCommandListener("jointeam", OnJoinTeamCommand);
 
         Logger.LogInformation("[EbotForceTeam] Plugin loaded (v{Version})", ModuleVersion);
@@ -90,34 +91,7 @@ public class EbotForceTeam : BasePlugin
         Logger.LogInformation("[EbotForceTeam] apply_rosters: enforcing {Count} roster entries on connected players",
             _roster.Count);
 
-        var moved = 0;
-        var correct = 0;
-
-        foreach (var player in Utilities.GetPlayers())
-        {
-            if (!player.IsValid || player.IsBot || player.IsHLTV)
-                continue;
-
-            if (player.Team == CsTeam.None || player.Team == CsTeam.Spectator)
-                continue;
-
-            if (!_roster.TryGetValue(player.SteamID, out var targetTeam))
-                continue;
-
-            if (player.Team == targetTeam)
-            {
-                correct++;
-                continue;
-            }
-
-            Logger.LogInformation("[EbotForceTeam] apply_rosters: {Name} ({SteamId64}) is on {Current}, should be {Target}",
-                player.PlayerName, player.SteamID, player.Team, targetTeam);
-            ForcePlayerToTeam(player, targetTeam);
-            moved++;
-        }
-
-        Logger.LogInformation("[EbotForceTeam] apply_rosters: {Moved} moved, {Correct} already correct",
-            moved, correct);
+        EnforceRosters("apply_rosters");
     }
 
     private void CommandForceTeam(CCSPlayerController? caller, CommandInfo info)
@@ -206,38 +180,13 @@ public class EbotForceTeam : BasePlugin
         return HookResult.Continue;
     }
 
-    private HookResult OnRoundPrestart(EventRoundPrestart @event, GameEventInfo info)
+    private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
         if (_roster.Count == 0)
             return HookResult.Continue;
 
-        var moved = 0;
-
-        foreach (var player in Utilities.GetPlayers())
-        {
-            if (!player.IsValid || player.IsBot || player.IsHLTV)
-                continue;
-
-            if (player.Team == CsTeam.None || player.Team == CsTeam.Spectator)
-                continue;
-
-            if (!_roster.TryGetValue(player.SteamID, out var targetTeam))
-                continue;
-
-            if (player.Team == targetTeam)
-                continue;
-
-            Logger.LogInformation("[EbotForceTeam] round_prestart: {Name} ({SteamId64}) is on {Current}, forcing to {Target}",
-                player.PlayerName, player.SteamID, player.Team, targetTeam);
-
-            player.SwitchTeam(targetTeam);
-            moved++;
-        }
-
-        if (moved > 0)
-        {
-            Logger.LogInformation("[EbotForceTeam] round_prestart: moved {Count} players to correct teams", moved);
-        }
+        // Delay to let the game finish its own team swaps (half-time, overtime)
+        AddTimer(1.0f, () => EnforceRosters("round_start"));
 
         return HookResult.Continue;
     }
@@ -284,7 +233,7 @@ public class EbotForceTeam : BasePlugin
 
             Server.NextFrame(() =>
             {
-                if (player.IsValid && !player.PawnIsAlive)
+                if (player.IsValid && !player.PawnIsAlive && CanRespawn())
                 {
                     player.Respawn();
                     Logger.LogInformation("[EbotForceTeam] jointeam: Respawned {Name} after team assignment",
@@ -298,6 +247,41 @@ public class EbotForceTeam : BasePlugin
 
     // --- Helpers ---
 
+    private void EnforceRosters(string source)
+    {
+        var moved = 0;
+        var correct = 0;
+
+        foreach (var player in Utilities.GetPlayers())
+        {
+            if (!player.IsValid || player.IsBot || player.IsHLTV)
+                continue;
+
+            if (player.Team == CsTeam.None || player.Team == CsTeam.Spectator)
+                continue;
+
+            if (!_roster.TryGetValue(player.SteamID, out var targetTeam))
+                continue;
+
+            if (player.Team == targetTeam)
+            {
+                correct++;
+                continue;
+            }
+
+            Logger.LogInformation("[EbotForceTeam] {Source}: {Name} ({SteamId64}) is on {Current}, forcing to {Target}",
+                source, player.PlayerName, player.SteamID, player.Team, targetTeam);
+            ForcePlayerToTeam(player, targetTeam);
+            moved++;
+        }
+
+        if (moved > 0 || correct > 0)
+        {
+            Logger.LogInformation("[EbotForceTeam] {Source}: {Moved} moved, {Correct} already correct",
+                source, moved, correct);
+        }
+    }
+
     private void ForcePlayerToTeam(CCSPlayerController player, CsTeam targetTeam)
     {
         Logger.LogInformation("[EbotForceTeam] Forcing {Name} ({SteamId64}) from {Current} to {Target}",
@@ -309,7 +293,7 @@ public class EbotForceTeam : BasePlugin
 
             player.SwitchTeam(targetTeam);
 
-            // Verify and respawn on next frame
+            // Verify on next frame and respawn only if safe
             Server.NextFrame(() =>
             {
                 if (!player.IsValid) return;
@@ -319,10 +303,10 @@ public class EbotForceTeam : BasePlugin
                     Logger.LogInformation("[EbotForceTeam] Verified: {Name} is now on {Team}",
                         player.PlayerName, targetTeam);
 
-                    if (!player.PawnIsAlive)
+                    if (!player.PawnIsAlive && CanRespawn())
                     {
                         player.Respawn();
-                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} after team assignment",
+                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} (safe state: warmup/freeze/paused)",
                             player.PlayerName);
                     }
                 }
@@ -333,6 +317,17 @@ public class EbotForceTeam : BasePlugin
                 }
             });
         });
+    }
+
+    private bool CanRespawn()
+    {
+        var gameRules = Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules")
+            .FirstOrDefault()?.GameRules;
+
+        if (gameRules == null)
+            return false;
+
+        return gameRules.WarmupPeriod || gameRules.FreezePeriod || gameRules.GamePaused;
     }
 
     private static CsTeam? ParseTeam(string teamStr)
