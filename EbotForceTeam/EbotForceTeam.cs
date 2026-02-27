@@ -13,7 +13,7 @@ namespace EbotForceTeam;
 public class EbotForceTeam : BasePlugin
 {
     public override string ModuleName => "eBot Force Team";
-    public override string ModuleVersion => "1.3.1";
+    public override string ModuleVersion => "1.3.2";
 
     private readonly Dictionary<ulong, CsTeam> _roster = new();
 
@@ -306,7 +306,7 @@ public class EbotForceTeam : BasePlugin
                     if (!player.PawnIsAlive && CanRespawn())
                     {
                         player.Respawn();
-                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} (safe state: warmup/freeze/paused)",
+                        Logger.LogInformation("[EbotForceTeam] Respawned {Name} (safe state: warmup/paused)",
                             player.PlayerName);
                     }
                 }
@@ -327,7 +327,7 @@ public class EbotForceTeam : BasePlugin
         if (gameRules == null)
             return false;
 
-        return gameRules.WarmupPeriod || gameRules.FreezePeriod || gameRules.GamePaused;
+        return gameRules.WarmupPeriod || gameRules.GamePaused;
     }
 
     private static CsTeam? ParseTeam(string teamStr)
