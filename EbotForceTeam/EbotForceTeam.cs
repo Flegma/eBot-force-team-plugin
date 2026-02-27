@@ -12,7 +12,7 @@ namespace EbotForceTeam;
 public class EbotForceTeam : BasePlugin
 {
     public override string ModuleName => "eBot Force Team";
-    public override string ModuleVersion => "1.2.0";
+    public override string ModuleVersion => "1.3.0";
 
     private readonly Dictionary<ulong, CsTeam> _roster = new();
 
@@ -28,6 +28,7 @@ public class EbotForceTeam : BasePlugin
             CommandApplyRosters);
 
         RegisterEventHandler<EventPlayerConnectFull>(OnPlayerConnectFull);
+        RegisterEventHandler<EventRoundPrestart>(OnRoundPrestart);
         AddCommandListener("jointeam", OnJoinTeamCommand);
 
         Logger.LogInformation("[EbotForceTeam] Plugin loaded (v{Version})", ModuleVersion);
@@ -201,6 +202,42 @@ public class EbotForceTeam : BasePlugin
 
             ForcePlayerToTeam(player, targetTeam);
         });
+
+        return HookResult.Continue;
+    }
+
+    private HookResult OnRoundPrestart(EventRoundPrestart @event, GameEventInfo info)
+    {
+        if (_roster.Count == 0)
+            return HookResult.Continue;
+
+        var moved = 0;
+
+        foreach (var player in Utilities.GetPlayers())
+        {
+            if (!player.IsValid || player.IsBot || player.IsHLTV)
+                continue;
+
+            if (player.Team == CsTeam.None || player.Team == CsTeam.Spectator)
+                continue;
+
+            if (!_roster.TryGetValue(player.SteamID, out var targetTeam))
+                continue;
+
+            if (player.Team == targetTeam)
+                continue;
+
+            Logger.LogInformation("[EbotForceTeam] round_prestart: {Name} ({SteamId64}) is on {Current}, forcing to {Target}",
+                player.PlayerName, player.SteamID, player.Team, targetTeam);
+
+            player.SwitchTeam(targetTeam);
+            moved++;
+        }
+
+        if (moved > 0)
+        {
+            Logger.LogInformation("[EbotForceTeam] round_prestart: moved {Count} players to correct teams", moved);
+        }
 
         return HookResult.Continue;
     }
